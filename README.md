@@ -6,7 +6,7 @@
 
 Console agêntico de desenvolvimento. Um único binário nativo em C que fala com o `llama-server`, executa ferramentas reais no sistema e consulta uma base Dev embutida (FTS5).
 
-**Binário:** `offellia_cli.bin` (~281 MB, Linux x86-64, base Dev embutida)
+**Binário:** `offellia_cli.bin` (~281 MB, Linux x86-64, base Dev embutida). v2.6.0 grava projetos no disco em etapas (tools locais no CWD).
 
 ---
 
@@ -27,13 +27,15 @@ Requisito de runtime: `libcurl` (pacote `libcurl4` nas distros Debian/Ubuntu).
 
 ## Características
 
-- **Agente autônomo** — loop de *tool calling* até concluir a tarefa (`finish_reason: stop`)
+- **Agente autônomo** — loop de *tool calling* até concluir a tarefa (`finish_reason: stop`); padrão 64 turnos (`/turns`)
+- **Disco em etapas** — `write_file`, `edit_file`, `read_file`, `exec_shell_command`, glob e grep rodam **no processo da CLI**, no `--cwd`. Não passam pelo isolate do llama-server, não têm teto de 60s/16 KB, e o artefato não vai no chat
+- **Sem timeout de 10 min no stream** — o curl não mata gerações longas; keepalive + heartbeat enquanto o prompt é avaliado. Se o modelo colar código no chat, a CLI desvia para `offellia_out/` e pede para continuar em tools
 - **llama-server** — auto-detecta `8080` ou `5173`; qualquer porta com `-p`
-- **Tools nativas do servidor** — `exec_shell_command`, `get_datetime`, `read_file`, `write_file`, `edit_file`, `grep_search`, `file_glob_search`, entre outras descobertas em `GET /tools`
+- **Tools extras do servidor** — MCP / demais tools de `GET /tools` seguem em `POST /tools`
 - **Base Dev embutida** — ~76 000 chunks de documentação de programação (SQLite FTS5 / BM25) compilados no executável; não exige arquivo `.db` ao lado
 - **Tool local** `search_dev_knowledge` — o modelo consulta a base quando precisa de sintaxe, padrões, frameworks ou boas práticas
-- **SSE** — resposta em streaming, inclusive `reasoning_content`
-- **CORS e CWD** — cabeçalhos `Origin` e `x-tool-cwd` em cada `POST /tools`
+- **SSE** — resposta em streaming, inclusive `reasoning_content` (o dump de fonte no terminal é truncado)
+- **CORS e CWD** — cabeçalhos `Origin` e `x-tool-cwd` nas tools remotas
 - **Dependência de runtime** — `libcurl` (SQLite e a base vão dentro do binário)
 
 ---
@@ -113,7 +115,7 @@ cd /home/userk21/OFFELLIA_CLI
 | `/tools` | Lista as ferramentas detectadas |
 | `/cwd [dir]` | Mostra ou altera o diretório das tools |
 | `/agent [on\|off]` | Liga ou desliga a execução autônoma |
-| `/turns <n>` | Limite de turnos agênticos (padrão: 20) |
+| `/turns <n>` | Limite de turnos agênticos (padrão: 64, máx. 200) |
 | `/port <porta>` | Troca a porta e recarrega as tools |
 | `/host <ip>` | Troca o host e recarrega as tools |
 | `/model` | Modelo ativo em `/v1/models` |
@@ -130,6 +132,7 @@ Qualquer outra linha é enviada ao modelo como prompt. O agente invoca tools, mo
 
 1. `GET /v1/models` — identifica o modelo carregado.
 2. `GET /tools` — carrega os schemas do llama-server e registra `search_dev_knowledge`.
-3. `POST /v1/chat/completions` (SSE, `stream: true`, campo `tools`).
-4. Se houver `tool_calls`, a CLI executa `POST /tools` com `Origin` e `x-tool-cwd`, injeta o retorno no histórico (`role: tool`) e repete o passo 3.
-5. Termina quando o modelo responde sem tools (`finish_reason: stop`).
+3. `POST /v1/chat/completions` (SSE, `stream: true`, campo `tools`, `tool_choice: auto`). Sem timeout total — gerações longas e prompt de 50k ctx não derrubam a conexão.
+4. Se houver `tool_calls`, a CLI executa **localmente** no CWD (`write_file` / `edit_file` / `exec_shell_command` / …). Tools desconhecidas vão a `POST /tools`. O retorno entra no histórico (`role: tool`) e o passo 3 se repete.
+5. Código colado no chat (em vez de tool) é gravado em `offellia_out/` e o loop pede continuidade em etapas.
+6. Termina quando o modelo responde sem tools (`finish_reason: stop`) e sem dump de fonte.
